@@ -36,7 +36,7 @@ export default function SwitchConsolePage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/switch/status');
+      const res = await fetch(`/api/switch/status?t=${Date.now()}`, { cache: 'no-store' });
       const data = await res.json();
       if (data.metrics) setMetrics(data.metrics);
       if (data.participants) setParticipants(data.participants);
@@ -50,8 +50,9 @@ export default function SwitchConsolePage() {
       const query = new URLSearchParams();
       if (searchTerm) query.set('search', searchTerm);
       if (statusFilter !== 'ALL') query.set('status', statusFilter);
+      query.set('t', Date.now().toString());
 
-      const res = await fetch(`/api/switch/transactions?${query.toString()}`);
+      const res = await fetch(`/api/switch/transactions?${query.toString()}`, { cache: 'no-store' });
       const data = await res.json();
       if (data.transactions) setTransactions(data.transactions);
     } catch (err) {

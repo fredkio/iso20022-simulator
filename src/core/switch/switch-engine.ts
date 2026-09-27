@@ -1467,6 +1467,48 @@ export class SwitchEngine {
           processingStatus: isSuccess ? 'PROCESSED' : 'REJECTED',
         });
 
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr: parsed.endToEndId || uetr,
+          instructionId: parsed.instructionId || txId,
+          endToEndId: parsed.endToEndId || txId,
+          txId,
+          originatingInstitution: {
+            id: 'creditor-bank',
+            code: parsed.creditorBankBic || 'CREDITOR_BANK',
+            name: parsed.creditorName || 'Creditor Bank',
+            routingCode: parsed.creditorBankMemberId || '058',
+          },
+          destinationInstitution: {
+            id: 'debtor-bank',
+            code: parsed.debtorBankBic || 'DEBTOR_BANK',
+            name: parsed.debtorName || 'Debtor Bank',
+            routingCode: parsed.debtorBankMemberId || '044',
+          },
+          debtor: {
+            name: parsed.debtorName || 'Customer Debtor',
+            accountNumber: parsed.debtorAccount,
+          },
+          creditor: {
+            name: parsed.creditorName || 'Creditor',
+            accountNumber: parsed.creditorAccount,
+          },
+          amount,
+          currency: parsed.currency || 'NGN',
+          localInstrument: 'DD',
+          chargeBearer: 'SLEV',
+          remittanceInformation: parsed.narration || parsed.mandateId,
+          status: isSuccess ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: isSuccess ? undefined : reasonCode,
+          statusReasonDescription: reasonDesc,
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: Date.now() - new Date(nowIso).getTime(),
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
         return {
           success: isSuccess,
           messageType: detectedType,
@@ -2557,6 +2599,48 @@ export class SwitchEngine {
       { status: txStatus, reasonCode, reasonDesc }
     );
     events.push(ev10);
+
+    const canonicalPayment: CanonicalPayment = {
+      id: txId,
+      businessJourneyId: journeyId,
+      uetr: endToEndId,
+      instructionId,
+      endToEndId,
+      txId,
+      originatingInstitution: {
+        id: billerParticipant.id,
+        code: billerParticipant.code,
+        name: billerParticipant.name,
+        routingCode: billerParticipant.routingCode,
+      },
+      destinationInstitution: {
+        id: debtorParticipant.id,
+        code: debtorParticipant.code,
+        name: debtorParticipant.name,
+        routingCode: debtorParticipant.routingCode,
+      },
+      debtor: {
+        name: parsedPain008.debtorName || debtorAcc?.accountName || 'Customer Debtor',
+        accountNumber: debtorAccount,
+      },
+      creditor: {
+        name: parsedPain008.initiatingPartyName || parsedPain008.creditorName || 'PowerGrid Utilities',
+        accountNumber: creditorAccount,
+      },
+      amount,
+      currency,
+      localInstrument: 'DD',
+      chargeBearer: 'SLEV',
+      remittanceInformation: `Direct Debit Mandate: ${mandateId}`,
+      status: isSuccess ? 'COMPLETED' : 'REJECTED',
+      statusReasonCode: isSuccess ? undefined : reasonCode,
+      statusReasonDescription: reasonDesc,
+      initiatedAt: nowIso,
+      completedAt: new Date().toISOString(),
+      latencyMs: Date.now() - new Date(nowIso).getTime(),
+    };
+    this.transactions.unshift(canonicalPayment);
+    syncPaymentToSupabase(canonicalPayment).catch(() => {});
 
     return {
       success: isSuccess,

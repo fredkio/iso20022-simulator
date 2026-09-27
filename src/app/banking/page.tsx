@@ -105,7 +105,7 @@ export default function CustomerBankingPage() {
 
   const fetchBanks = useCallback(async () => {
     try {
-      const res = await fetch('/api/banks');
+      const res = await fetch(`/api/banks?t=${Date.now()}`, { cache: 'no-store' });
       const data = await res.json();
       if (data.banks) {
         setBanks(data.banks);

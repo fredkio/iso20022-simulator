@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getSimulatorInstance } from '@/core/simulator-instance';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export async function GET() {
   const { switchEngine, bankCore } = getSimulatorInstance();
   const participants = switchEngine.getParticipants();
