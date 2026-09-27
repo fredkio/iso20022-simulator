@@ -154,7 +154,14 @@ export class SwitchEngine {
   }
 
   public getMessagesForTransaction(uetr: string): IsoStoredMessage[] {
-    return this.storedMessages.filter((m) => m.uetr === uetr || m.businessJourneyId === uetr);
+    const tx = this.getTransaction(uetr);
+    return this.storedMessages.filter(
+      (m) =>
+        m.uetr === uetr ||
+        m.businessJourneyId === uetr ||
+        m.transactionId === uetr ||
+        (tx && (m.businessJourneyId === tx.businessJourneyId || m.transactionId === tx.id || m.uetr === tx.uetr))
+    );
   }
 
   public getEventsForTransaction(uetrOrTxId: string): TransactionEvent[] {
@@ -1264,61 +1271,135 @@ export class SwitchEngine {
     if (detectedType.startsWith('acmt.023')) {
       try {
         const parsed = parseAcmt023Xml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.verificationId || `VRF-${Date.now()}-${uuidv4().slice(0, 6)}`;
         const destAccount = this.bankCore.getAccount(parsed.accountNumber);
         const isVerified = Boolean(destAccount && destAccount.status !== 'CLOSED');
         const verifiedName = destAccount?.accountName;
         const msg024Id = `MSG-024-${Date.now()}`;
 
+        const origParticipant = this.getParticipantByCode(parsed.senderBic) ||
+          Array.from(this.participants.values()).find((p) => p.routingCode === parsed.senderBic) ||
+          Array.from(this.participants.values())[0];
+
+        const destParticipant = this.getParticipantByCode(parsed.receiverBic) ||
+          Array.from(this.participants.values()).find((p) => p.routingCode === parsed.receiverBic) ||
+          Array.from(this.participants.values())[1];
+
         const responseXml = buildAcmt024Xml({
           msgId: msg024Id,
           creDtTm: nowIso,
-          senderBic: parsed.receiverBic || '999057',
-          receiverBic: parsed.senderBic || '999058',
+          senderBic: parsed.receiverBic || destParticipant?.code || '999057',
+          receiverBic: parsed.senderBic || origParticipant?.code || '999058',
           originalVerificationId: parsed.verificationId || parsed.msgId,
           isVerified,
           reasonCode: isVerified ? 'VALID' : 'AC01',
           reasonDescription: isVerified ? 'Account verified' : 'Account does not exist',
           accountNumber: parsed.accountNumber,
           verifiedPartyName: verifiedName || 'N/A',
-          destinationBic: parsed.receiverBic || '999057',
+          destinationBic: parsed.receiverBic || destParticipant?.code || '999057',
         });
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.verificationId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '04',
           messageId: parsed.msgId,
-          senderBic: parsed.senderBic || 'UNKNOWN',
-          receiverBic: parsed.receiverBic || 'CENTRAL_SWITCH',
+          senderBic: parsed.senderBic || origParticipant?.code || 'UNKNOWN',
+          receiverBic: parsed.receiverBic || destParticipant?.code || 'CENTRAL_SWITCH',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.verificationId,
-          endToEndId: parsed.verificationId,
+          uetr,
+          endToEndId: parsed.verificationId || uetr,
           instructionId: parsed.msgId,
-          debtorAgent: parsed.senderBic || '',
-          creditorAgent: parsed.receiverBic || '',
+          debtorAgent: parsed.senderBic || origParticipant?.code,
+          creditorAgent: parsed.receiverBic || destParticipant?.code,
           processingStatus: 'PROCESSED',
         });
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.verificationId || parsed.msgId,
+          transactionId: txId,
           messageType: 'acmt.024.001.04',
           messageVersion: '04',
           messageId: msg024Id,
           originalMessageId: parsed.msgId,
-          senderBic: parsed.receiverBic || 'CENTRAL_SWITCH',
-          receiverBic: parsed.senderBic || 'UNKNOWN',
+          senderBic: parsed.receiverBic || destParticipant?.code || 'CENTRAL_SWITCH',
+          receiverBic: parsed.senderBic || origParticipant?.code || 'UNKNOWN',
           rawXml: responseXml,
           parsedJson: { isVerified, verifiedName, reasonCode: isVerified ? 'VALID' : 'AC01' },
-          uetr: parsed.verificationId,
-          endToEndId: parsed.verificationId,
+          uetr,
+          endToEndId: parsed.verificationId || uetr,
           instructionId: msg024Id,
-          debtorAgent: parsed.receiverBic || '',
-          creditorAgent: parsed.senderBic || '',
+          debtorAgent: parsed.receiverBic || destParticipant?.code,
+          creditorAgent: parsed.senderBic || origParticipant?.code,
           processingStatus: isVerified ? 'PROCESSED' : 'REJECTED',
         });
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-023-${Date.now()}`,
+          endToEndId: parsed.verificationId || uetr,
+          txId,
+          originatingInstitution: {
+            id: origParticipant?.id || 'orig',
+            code: origParticipant?.code || parsed.senderBic || 'ORIG_BANK',
+            name: origParticipant?.name || 'Originating Institution',
+            routingCode: origParticipant?.routingCode || '058',
+          },
+          destinationInstitution: {
+            id: destParticipant?.id || 'dest',
+            code: destParticipant?.code || parsed.receiverBic || 'DEST_BANK',
+            name: destParticipant?.name || 'Destination Institution',
+            routingCode: destParticipant?.routingCode || '044',
+          },
+          debtor: {
+            name: isVerified ? (verifiedName || 'Verified Beneficiary') : 'Unverified Beneficiary',
+            accountNumber: parsed.accountNumber,
+          },
+          creditor: {
+            name: 'Name Enquiry Requester',
+            accountNumber: parsed.senderBic || 'Enquiring Institution',
+          },
+          amount: 0,
+          currency: 'NGN',
+          localInstrument: 'ENQ',
+          messageType: 'acmt.023',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Name Enquiry: ${parsed.accountNumber} - ${isVerified ? verifiedName : 'Not Found'}`,
+          status: isVerified ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: isVerified ? 'VALID' : 'AC01',
+          statusReasonDescription: isVerified ? `Account verified: ${verifiedName}` : 'Account does not exist',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        this.emitEvent(
+          txId,
+          journeyId,
+          'IDENTIFICATION_VERIFICATION_REQUESTED',
+          origParticipant?.name || 'Originating Bank',
+          'ORIGINATION',
+          'INFO',
+          `Name enquiry requested for account ${parsed.accountNumber}`,
+          { verificationId: parsed.verificationId }
+        );
+        this.emitEvent(
+          txId,
+          journeyId,
+          isVerified ? 'IDENTIFICATION_VERIFIED' : 'IDENTIFICATION_FAILED',
+          destParticipant?.name || 'Destination Bank',
+          'DESTINATION',
+          isVerified ? 'SUCCESS' : 'ERROR',
+          isVerified ? `Identification verified: ${verifiedName}` : 'Account does not exist at destination',
+          { verifiedName, reasonCode: isVerified ? 'VALID' : 'AC01' }
+        );
 
         return {
           success: isVerified,
@@ -1329,7 +1410,8 @@ export class SwitchEngine {
           responseParsed: { isVerified, verifiedName },
           error: isVerified ? undefined : 'Account does not exist at destination institution',
           reasonCode: isVerified ? 'VALID' : 'AC01',
-          transactionId: parsed.verificationId,
+          transactionId: txId,
+          uetr,
         };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
@@ -1340,9 +1422,11 @@ export class SwitchEngine {
     if (detectedType.startsWith('acmt.024')) {
       try {
         const parsed = parseAcmt024Xml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.originalVerificationId || `VRF-RPT-${Date.now()}-${uuidv4().slice(0, 6)}`;
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.originalVerificationId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '04',
           messageId: parsed.msgId,
@@ -1351,12 +1435,56 @@ export class SwitchEngine {
           receiverBic: parsed.receiverBic || 'ORIG_BANK',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.originalVerificationId,
-          endToEndId: parsed.originalVerificationId,
+          uetr,
+          endToEndId: parsed.originalVerificationId || uetr,
           instructionId: parsed.msgId,
           processingStatus: parsed.isVerified ? 'PROCESSED' : 'REJECTED',
         });
-        return { success: true, messageType: detectedType, parsed };
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-024-${Date.now()}`,
+          endToEndId: parsed.originalVerificationId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'dest-bank',
+            code: parsed.senderBic || 'DEST_BANK',
+            name: 'Destination Institution',
+            routingCode: '044',
+          },
+          destinationInstitution: {
+            id: 'orig-bank',
+            code: parsed.receiverBic || 'ORIG_BANK',
+            name: 'Originating Institution',
+            routingCode: '058',
+          },
+          debtor: {
+            name: parsed.verifiedPartyName || 'Verified Party',
+            accountNumber: parsed.accountNumber || '',
+          },
+          creditor: {
+            name: 'Enquiry Originator',
+            accountNumber: parsed.receiverBic || 'ORIG_BANK',
+          },
+          amount: 0,
+          currency: 'NGN',
+          localInstrument: 'ENQ',
+          messageType: 'acmt.024',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Name Enquiry Report: ${parsed.reasonDescription || parsed.reasonCode}`,
+          status: parsed.isVerified ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: parsed.reasonCode || (parsed.isVerified ? 'VALID' : 'AC01'),
+          statusReasonDescription: parsed.reasonDescription,
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        return { success: true, messageType: detectedType, parsed, transactionId: txId, uetr };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
@@ -1533,8 +1661,10 @@ export class SwitchEngine {
     if (detectedType.startsWith('pacs.028')) {
       try {
         const parsed = parsePacs028Xml(rawXml);
-        const origTxId = parsed.originalTxId;
+        const txId = uuidv4();
+        const origTxId = parsed.originalTxId || `ORIG-${Date.now()}`;
         const origMsgId = parsed.originalMsgId;
+        const uetr = parsed.statusRequestId || `PSR-${Date.now()}-${uuidv4().slice(0, 6)}`;
 
         // Search in transactions or stored messages
         const foundTx = this.transactions.find(
@@ -1558,8 +1688,8 @@ export class SwitchEngine {
           } else if (foundTx.status === 'REJECTED') {
             groupStatus = 'RJCT';
             txStatus = 'RJCT';
-            reasonCode = foundTx.failureReasonCode || 'AM04';
-            reasonDesc = foundTx.failureReason || 'Payment rejected';
+            reasonCode = foundTx.statusReasonCode || 'AM04';
+            reasonDesc = foundTx.statusReasonDescription || 'Payment rejected';
           } else {
             groupStatus = 'ACTC';
             txStatus = 'ACTC';
@@ -1600,7 +1730,7 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: origTxId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '06',
           messageId: parsed.msgId,
@@ -1609,15 +1739,15 @@ export class SwitchEngine {
           receiverBic: 'CENTRAL_SWITCH',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.statusRequestId,
+          uetr,
           endToEndId: origTxId,
-          instructionId: parsed.statusRequestId,
+          instructionId: parsed.statusRequestId || parsed.msgId,
           processingStatus: 'PROCESSED',
         });
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: origTxId,
+          transactionId: txId,
           messageType: 'pacs.002.001.12',
           messageVersion: '12',
           messageId: msg002Id,
@@ -1626,11 +1756,75 @@ export class SwitchEngine {
           receiverBic: parsed.instgAgtMemberId || 'ORIG_BANK',
           rawXml: responseXml,
           parsedJson: { groupStatus, txStatus, reasonCode, reasonDesc },
-          uetr: parsed.statusRequestId,
+          uetr,
           endToEndId: origTxId,
           instructionId: msg002Id,
           processingStatus: groupStatus === 'ACSC' ? 'PROCESSED' : 'REJECTED',
         });
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-028-${Date.now()}`,
+          endToEndId: origTxId,
+          txId,
+          originatingInstitution: {
+            id: 'instg-agent',
+            code: parsed.instgAgtMemberId || 'ORIG_BANK',
+            name: 'Instructing Agent',
+            routingCode: parsed.instgAgtMemberId || '044',
+          },
+          destinationInstitution: {
+            id: 'switch',
+            code: 'CENTRAL_SWITCH',
+            name: 'Central Payment Switch',
+            routingCode: 'NPS',
+          },
+          debtor: {
+            name: foundTx?.debtor.name || 'Originating Account',
+            accountNumber: foundTx?.debtor.accountNumber || origTxId,
+          },
+          creditor: {
+            name: foundTx?.creditor.name || 'Beneficiary Account',
+            accountNumber: foundTx?.creditor.accountNumber || origTxId,
+          },
+          amount: foundTx?.amount || 0,
+          currency: foundTx?.currency || 'NGN',
+          localInstrument: 'PSR',
+          messageType: 'pacs.028',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Payment Status Enquiry for ${origTxId}: ${reasonDesc}`,
+          status: groupStatus === 'ACSC' || groupStatus === 'ACTC' ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: reasonCode || groupStatus,
+          statusReasonDescription: reasonDesc,
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 15,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        this.emitEvent(
+          txId,
+          journeyId,
+          'SWITCH_RECEIVED',
+          parsed.instgAgtMemberId || 'Instructing Bank',
+          'ORIGINATION',
+          'INFO',
+          `Switch received pacs.028 status request for transaction ${origTxId}`,
+          { originalTxId: origTxId }
+        );
+        this.emitEvent(
+          txId,
+          journeyId,
+          groupStatus === 'ACSC' ? 'RESPONSE_CREATED' : 'TRANSACTION_REJECTED',
+          'CENTRAL_SWITCH',
+          'SWITCHING',
+          groupStatus === 'ACSC' ? 'SUCCESS' : 'ERROR',
+          `Status response pacs.002 generated: ${reasonDesc}`,
+          { groupStatus, reasonCode }
+        );
 
         return {
           success: groupStatus === 'ACSC' || groupStatus === 'ACTC',
@@ -1641,25 +1835,105 @@ export class SwitchEngine {
           responseParsed: { groupStatus, txStatus, reasonCode, reasonDesc },
           reasonCode,
           error: groupStatus === 'RJCT' ? reasonDesc : undefined,
-          transactionId: origTxId,
+          transactionId: txId,
+          uetr,
         };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
     }
 
-    // 6. camt.060 Account Reporting Request
+    // 6. camt.060 Account Reporting Request (Balance & Statement Enquiry)
     if (detectedType.startsWith('camt.060')) {
       try {
         const parsed = parseCamt060Xml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.reportingReqId || `CAMT-${Date.now()}-${uuidv4().slice(0, 6)}`;
         const account = this.bankCore.getAccount(parsed.accountNumber);
+
+        const senderParticipant = this.getParticipantByCode(parsed.senderMemberId) ||
+          Array.from(this.participants.values()).find((p) => p.routingCode === parsed.senderMemberId) ||
+          Array.from(this.participants.values())[0];
+
+        const destParticipant = account
+          ? this.getParticipantByCode(account.institutionId) ||
+            Array.from(this.participants.values()).find((p) => p.id === account.institutionId) ||
+            Array.from(this.participants.values())[1]
+          : Array.from(this.participants.values())[1];
+
         if (!account) {
+          const canonicalPayment: CanonicalPayment = {
+            id: txId,
+            businessJourneyId: journeyId,
+            uetr,
+            instructionId: parsed.msgId || `MSG-060-${Date.now()}`,
+            endToEndId: parsed.reportingReqId || uetr,
+            txId,
+            originatingInstitution: {
+              id: senderParticipant.id,
+              code: senderParticipant.code,
+              name: senderParticipant.name,
+              routingCode: senderParticipant.routingCode,
+            },
+            destinationInstitution: {
+              id: destParticipant.id,
+              code: destParticipant.code,
+              name: destParticipant.name,
+              routingCode: destParticipant.routingCode,
+            },
+            debtor: {
+              name: 'Unknown Account Holder',
+              accountNumber: parsed.accountNumber,
+            },
+            creditor: {
+              name: 'Central Switch / Reporting Servicer',
+              accountNumber: parsed.requestedMsgNameId || 'camt.053',
+            },
+            amount: 0,
+            currency: parsed.currency || 'NGN',
+            localInstrument: 'ENQ',
+            messageType: 'camt.060',
+            chargeBearer: 'SLEV',
+            remittanceInformation: `Balance Enquiry for ${parsed.accountNumber} - Account Not Found`,
+            status: 'REJECTED',
+            statusReasonCode: 'AC01',
+            statusReasonDescription: `Account ${parsed.accountNumber} not found for reporting`,
+            initiatedAt: nowIso,
+            completedAt: new Date().toISOString(),
+            latencyMs: 12,
+          };
+          this.transactions.unshift(canonicalPayment);
+          syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+          this.emitEvent(
+            txId,
+            journeyId,
+            'SWITCH_RECEIVED',
+            senderParticipant.name,
+            'ORIGINATION',
+            'INFO',
+            `Switch received camt.060.001.07 Account Reporting Request for ${parsed.accountNumber}`,
+            { msgId: parsed.msgId }
+          );
+          this.emitEvent(
+            txId,
+            journeyId,
+            'TRANSACTION_REJECTED',
+            'CENTRAL_SWITCH',
+            'SWITCHING',
+            'ERROR',
+            `Account ${parsed.accountNumber} not found at destination institution (AC01)`,
+            { reasonCode: 'AC01' }
+          );
+
           return {
             success: false,
             messageType: detectedType,
             parsed,
             error: `Account ${parsed.accountNumber} not found for reporting`,
             reasonCode: 'AC01',
+            transactionId: txId,
+            uetr,
           };
         }
 
@@ -1705,36 +1979,100 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.reportingReqId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '07',
           messageId: parsed.msgId,
-          senderBic: parsed.senderMemberId || '044',
+          senderBic: parsed.senderMemberId || senderParticipant.code || '044',
           receiverBic: 'CENTRAL_SWITCH',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.reportingReqId,
-          endToEndId: parsed.reportingReqId,
+          uetr,
+          endToEndId: parsed.reportingReqId || uetr,
           instructionId: parsed.msgId,
           processingStatus: 'PROCESSED',
         });
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.reportingReqId || parsed.msgId,
+          transactionId: txId,
           messageType: targetVersionType,
           messageVersion: '12',
           messageId: msgRptId,
           originalMessageId: parsed.msgId,
           senderBic: 'CENTRAL_SWITCH',
-          receiverBic: parsed.senderMemberId || '044',
+          receiverBic: parsed.senderMemberId || senderParticipant.code || '044',
           rawXml: responseXml,
           parsedJson: { closingBalance: account.availableBalance, entriesCount: entries.length },
-          uetr: parsed.reportingReqId,
-          endToEndId: parsed.reportingReqId,
+          uetr,
+          endToEndId: parsed.reportingReqId || uetr,
           instructionId: msgRptId,
           processingStatus: 'PROCESSED',
         });
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-060-${Date.now()}`,
+          endToEndId: parsed.reportingReqId || uetr,
+          txId,
+          originatingInstitution: {
+            id: senderParticipant.id,
+            code: senderParticipant.code,
+            name: senderParticipant.name,
+            routingCode: senderParticipant.routingCode,
+          },
+          destinationInstitution: {
+            id: destParticipant.id,
+            code: destParticipant.code,
+            name: destParticipant.name,
+            routingCode: destParticipant.routingCode,
+          },
+          debtor: {
+            name: account.accountName || 'Account Holder',
+            accountNumber: parsed.accountNumber,
+          },
+          creditor: {
+            name: 'Central Switch / Reporting Servicer',
+            accountNumber: parsed.requestedMsgNameId || 'camt.053',
+          },
+          amount: 0,
+          currency: account.currency || parsed.currency || 'NGN',
+          localInstrument: 'ENQ',
+          messageType: 'camt.060',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Balance Enquiry: Available ₦${account.availableBalance.toLocaleString()} (Ledger: ₦${account.ledgerBalance.toLocaleString()})`,
+          status: 'COMPLETED',
+          statusReasonCode: 'ACSC',
+          statusReasonDescription: `Balance reported successfully: ₦${account.availableBalance.toLocaleString()}`,
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 14,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        this.emitEvent(
+          txId,
+          journeyId,
+          'SWITCH_RECEIVED',
+          senderParticipant.name,
+          'ORIGINATION',
+          'INFO',
+          `Switch received camt.060.001.07 Account Reporting Request for ${parsed.accountNumber}`,
+          { msgId: parsed.msgId, accountNumber: parsed.accountNumber }
+        );
+        this.emitEvent(
+          txId,
+          journeyId,
+          'RESPONSE_CREATED',
+          'CENTRAL_SWITCH',
+          'SWITCHING',
+          'SUCCESS',
+          `Generated ${targetVersionType} statement report: Available Balance ₦${account.availableBalance.toLocaleString()}`,
+          { closingBalance: account.availableBalance, ledgerBalance: account.ledgerBalance }
+        );
 
         return {
           success: true,
@@ -1743,34 +2081,83 @@ export class SwitchEngine {
           responseXml,
           responseMessageType: targetVersionType,
           responseParsed: { accountNumber: parsed.accountNumber, balance: account.availableBalance, entriesCount: entries.length },
-          transactionId: parsed.reportingReqId,
+          transactionId: txId,
+          uetr,
         };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
     }
 
-    // 7. camt.052 or camt.053
+    // 7. camt.052 or camt.053 Direct Inbound Statement
     if (detectedType.startsWith('camt.052') || detectedType.startsWith('camt.053')) {
       try {
         const parsed = parseCamt052Or053Xml(rawXml);
+        const txId = uuidv4();
+        const is052 = detectedType.startsWith('camt.052');
+        const uetr = parsed.reportId || `RPT-${Date.now()}-${uuidv4().slice(0, 6)}`;
+
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.reportId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '12',
           messageId: parsed.msgId,
           originalMessageId: parsed.originalQueryMsgId,
-          senderBic: 'REPORTING_AGENT',
+          senderBic: parsed.servicerMemberId || 'REPORTING_AGENT',
           receiverBic: 'CENTRAL_SWITCH',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.reportId,
-          endToEndId: parsed.reportId,
+          uetr,
+          endToEndId: parsed.reportId || uetr,
           instructionId: parsed.msgId,
           processingStatus: 'PROCESSED',
         });
-        return { success: true, messageType: detectedType, parsed };
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-${is052 ? '052' : '053'}-${Date.now()}`,
+          endToEndId: parsed.reportId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'servicer',
+            code: parsed.servicerMemberId || '044',
+            name: 'Account Servicing Institution',
+            routingCode: parsed.servicerMemberId || '044',
+          },
+          destinationInstitution: {
+            id: 'recipient',
+            code: 'CENTRAL_SWITCH',
+            name: 'Central Switch',
+            routingCode: 'NPS',
+          },
+          debtor: {
+            name: parsed.recipientName || 'Account Holder',
+            accountNumber: parsed.accountNumber || '',
+          },
+          creditor: {
+            name: is052 ? 'Account Report (camt.052)' : 'Account Statement (camt.053)',
+            accountNumber: parsed.accountNumber || '',
+          },
+          amount: parsed.closingBalance || 0,
+          currency: parsed.currency || 'NGN',
+          localInstrument: 'RPT',
+          messageType: is052 ? 'camt.052' : 'camt.053',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `${is052 ? 'Interim' : 'Final'} Account Statement: Balance ₦${(parsed.closingBalance || 0).toLocaleString()}`,
+          status: 'COMPLETED',
+          statusReasonCode: 'ACSC',
+          statusReasonDescription: 'Account statement parsed and acknowledged',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        return { success: true, messageType: detectedType, parsed, transactionId: txId, uetr };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
@@ -1780,6 +2167,8 @@ export class SwitchEngine {
     if (detectedType.startsWith('pain.009')) {
       try {
         const parsed = parseMandateXml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.mandateId || `MNDT-${Date.now()}-${uuidv4().slice(0, 6)}`;
         const debtorAcc = this.bankCore.getAccount(parsed.debtorAccount);
         const isAccepted = Boolean(debtorAcc && debtorAcc.status === 'ACTIVE');
         const msg012Id = `MSG-012-${Date.now()}`;
@@ -1809,7 +2198,7 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.mandateId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '08',
           messageId: parsed.msgId,
@@ -1817,8 +2206,8 @@ export class SwitchEngine {
           receiverBic: parsed.debtorBank || 'DEBTOR_BANK',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.mandateId,
-          endToEndId: parsed.mandateId,
+          uetr,
+          endToEndId: parsed.mandateId || uetr,
           instructionId: parsed.msgId,
           amount: parsed.amount,
           debtorAgent: parsed.debtorBank,
@@ -1828,7 +2217,7 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.mandateId || parsed.msgId,
+          transactionId: txId,
           messageType: 'pain.012.001.08',
           messageVersion: '08',
           messageId: msg012Id,
@@ -1837,11 +2226,75 @@ export class SwitchEngine {
           receiverBic: parsed.creditorBank || 'CREDITOR_BANK',
           rawXml: responseXml,
           parsedJson: { accepted: isAccepted },
-          uetr: parsed.mandateId,
-          endToEndId: parsed.mandateId,
+          uetr,
+          endToEndId: parsed.mandateId || uetr,
           instructionId: msg012Id,
           processingStatus: isAccepted ? 'PROCESSED' : 'REJECTED',
         });
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-009-${Date.now()}`,
+          endToEndId: parsed.mandateId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'creditor-bank',
+            code: parsed.creditorBank || 'CREDITOR_BANK',
+            name: 'Creditor Institution',
+            routingCode: '058',
+          },
+          destinationInstitution: {
+            id: 'debtor-bank',
+            code: parsed.debtorBank || 'DEBTOR_BANK',
+            name: 'Debtor Institution',
+            routingCode: '044',
+          },
+          debtor: {
+            name: parsed.debtorName || 'Mandate Debtor',
+            accountNumber: parsed.debtorAccount,
+          },
+          creditor: {
+            name: parsed.creditorName || 'Mandate Creditor',
+            accountNumber: parsed.creditorAccount,
+          },
+          amount: parsed.amount || 0,
+          currency: 'NGN',
+          localInstrument: 'MNDT',
+          messageType: 'pain.009',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Mandate Initiation: ${parsed.mandateId}`,
+          status: isAccepted ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: isAccepted ? 'ACCP' : 'AC01',
+          statusReasonDescription: isAccepted ? 'Direct Debit Mandate Accepted' : 'Debtor account invalid or inactive',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 15,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        this.emitEvent(
+          txId,
+          journeyId,
+          'SWITCH_RECEIVED',
+          parsed.creditorBank || 'Creditor Bank',
+          'ORIGINATION',
+          'INFO',
+          `Switch received pain.009 mandate initiation for ${parsed.mandateId}`,
+          { mandateId: parsed.mandateId }
+        );
+        this.emitEvent(
+          txId,
+          journeyId,
+          isAccepted ? 'RESPONSE_CREATED' : 'TRANSACTION_REJECTED',
+          parsed.debtorBank || 'Debtor Bank',
+          'DESTINATION',
+          isAccepted ? 'SUCCESS' : 'ERROR',
+          isAccepted ? `Mandate accepted: ${parsed.mandateId}` : 'Mandate rejected: account inactive or invalid',
+          { status: isAccepted ? 'ACCP' : 'AC01' }
+        );
 
         return {
           success: isAccepted,
@@ -1852,7 +2305,8 @@ export class SwitchEngine {
           responseParsed: { accepted: isAccepted },
           error: isAccepted ? undefined : 'Debtor account invalid or inactive',
           reasonCode: isAccepted ? 'ACCP' : 'AC01',
-          transactionId: parsed.mandateId,
+          transactionId: txId,
+          uetr,
         };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
@@ -1863,8 +2317,10 @@ export class SwitchEngine {
     if (detectedType.startsWith('pain.010') || detectedType.startsWith('pain.011')) {
       try {
         const parsed = parseMandateXml(rawXml);
+        const txId = uuidv4();
         const msg012Id = `MSG-012-${Date.now()}`;
         const isCancel = detectedType.startsWith('pain.011');
+        const uetr = parsed.mandateId || `MNDT-${isCancel ? 'CXL' : 'AMD'}-${Date.now()}`;
 
         const responseXml = buildPain012Xml({
           msgId: msg012Id,
@@ -1887,7 +2343,7 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.mandateId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '08',
           messageId: parsed.msgId,
@@ -1895,15 +2351,15 @@ export class SwitchEngine {
           receiverBic: parsed.debtorBank || 'DEBTOR_BANK',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.mandateId,
-          endToEndId: parsed.mandateId,
+          uetr,
+          endToEndId: parsed.mandateId || uetr,
           instructionId: parsed.msgId,
           processingStatus: 'PROCESSED',
         });
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.mandateId || parsed.msgId,
+          transactionId: txId,
           messageType: 'pain.012.001.08',
           messageVersion: '08',
           messageId: msg012Id,
@@ -1912,11 +2368,54 @@ export class SwitchEngine {
           receiverBic: parsed.creditorBank || 'CREDITOR_BANK',
           rawXml: responseXml,
           parsedJson: { accepted: true },
-          uetr: parsed.mandateId,
-          endToEndId: parsed.mandateId,
+          uetr,
+          endToEndId: parsed.mandateId || uetr,
           instructionId: msg012Id,
           processingStatus: 'PROCESSED',
         });
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-${isCancel ? '011' : '010'}-${Date.now()}`,
+          endToEndId: parsed.mandateId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'creditor-bank',
+            code: parsed.creditorBank || 'CREDITOR_BANK',
+            name: 'Creditor Institution',
+            routingCode: '058',
+          },
+          destinationInstitution: {
+            id: 'debtor-bank',
+            code: parsed.debtorBank || 'DEBTOR_BANK',
+            name: 'Debtor Institution',
+            routingCode: '044',
+          },
+          debtor: {
+            name: parsed.debtorName || 'Mandate Debtor',
+            accountNumber: parsed.debtorAccount,
+          },
+          creditor: {
+            name: parsed.creditorName || 'Mandate Creditor',
+            accountNumber: parsed.creditorAccount,
+          },
+          amount: 0,
+          currency: 'NGN',
+          localInstrument: 'MNDT',
+          messageType: isCancel ? 'pain.011' : 'pain.010',
+          chargeBearer: 'SLEV',
+          remittanceInformation: isCancel ? `Mandate Cancellation: ${parsed.mandateId}` : `Mandate Amendment: ${parsed.mandateId}`,
+          status: 'COMPLETED',
+          statusReasonCode: 'ACCP',
+          statusReasonDescription: isCancel ? 'Mandate cancellation processed' : 'Mandate amendment accepted',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 15,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
 
         return {
           success: true,
@@ -1925,7 +2424,8 @@ export class SwitchEngine {
           responseXml,
           responseMessageType: 'pain.012.001.08',
           responseParsed: { accepted: true },
-          transactionId: parsed.mandateId,
+          transactionId: txId,
+          uetr,
         };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
@@ -1936,9 +2436,12 @@ export class SwitchEngine {
     if (detectedType.startsWith('pain.012')) {
       try {
         const parsed = parseMandateXml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.mandateId || `MNDT-RPT-${Date.now()}`;
+
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.mandateId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '08',
           messageId: parsed.msgId,
@@ -1947,12 +2450,56 @@ export class SwitchEngine {
           receiverBic: parsed.creditorBank || 'CREDITOR_BANK',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.mandateId,
-          endToEndId: parsed.mandateId,
+          uetr,
+          endToEndId: parsed.mandateId || uetr,
           instructionId: parsed.msgId,
           processingStatus: parsed.accepted ? 'PROCESSED' : 'REJECTED',
         });
-        return { success: true, messageType: detectedType, parsed };
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-012-${Date.now()}`,
+          endToEndId: parsed.mandateId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'debtor-bank',
+            code: 'DEBTOR_BANK',
+            name: 'Debtor Institution',
+            routingCode: '044',
+          },
+          destinationInstitution: {
+            id: 'creditor-bank',
+            code: 'CREDITOR_BANK',
+            name: 'Creditor Institution',
+            routingCode: '058',
+          },
+          debtor: {
+            name: parsed.debtorName || 'Mandate Debtor',
+            accountNumber: parsed.debtorAccount || '',
+          },
+          creditor: {
+            name: parsed.creditorName || 'Mandate Creditor',
+            accountNumber: parsed.creditorAccount || '',
+          },
+          amount: parsed.amount || 0,
+          currency: 'NGN',
+          localInstrument: 'MNDT',
+          messageType: 'pain.012',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Mandate Report: ${parsed.mandateId}`,
+          status: 'COMPLETED',
+          statusReasonCode: 'ACCP',
+          statusReasonDescription: 'Mandate acceptance report acknowledged',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        return { success: true, messageType: detectedType, parsed, transactionId: txId, uetr };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
@@ -1962,6 +2509,8 @@ export class SwitchEngine {
     if (detectedType.startsWith('pain.013')) {
       try {
         const parsed = parseRtpXml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.endToEndId || `RTP-${Date.now()}-${uuidv4().slice(0, 6)}`;
         const debtorAcc = this.bankCore.getAccount(parsed.debtorAccount);
         const isAccp = Boolean(debtorAcc && debtorAcc.status === 'ACTIVE');
         const msg014Id = `MSG-014-${Date.now()}`;
@@ -1987,7 +2536,7 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.endToEndId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '11',
           messageId: parsed.msgId,
@@ -1995,8 +2544,8 @@ export class SwitchEngine {
           receiverBic: parsed.debtorBank || 'DEBTOR_BANK',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.endToEndId,
-          endToEndId: parsed.endToEndId,
+          uetr,
+          endToEndId: parsed.endToEndId || uetr,
           instructionId: parsed.msgId,
           amount: parsed.amount,
           debtorAgent: parsed.debtorBank,
@@ -2006,7 +2555,7 @@ export class SwitchEngine {
 
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.endToEndId || parsed.msgId,
+          transactionId: txId,
           messageType: 'pain.014.001.11',
           messageVersion: '11',
           messageId: msg014Id,
@@ -2015,11 +2564,75 @@ export class SwitchEngine {
           receiverBic: parsed.creditorBank || 'CREDITOR_BANK',
           rawXml: responseXml,
           parsedJson: { status: isAccp ? 'ACCP' : 'RJCT' },
-          uetr: parsed.endToEndId,
-          endToEndId: parsed.endToEndId,
+          uetr,
+          endToEndId: parsed.endToEndId || uetr,
           instructionId: msg014Id,
           processingStatus: isAccp ? 'PROCESSED' : 'REJECTED',
         });
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-013-${Date.now()}`,
+          endToEndId: parsed.endToEndId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'creditor-bank',
+            code: parsed.creditorBank || 'CREDITOR_BANK',
+            name: 'Creditor Institution',
+            routingCode: '058',
+          },
+          destinationInstitution: {
+            id: 'debtor-bank',
+            code: parsed.debtorBank || 'DEBTOR_BANK',
+            name: 'Debtor Institution',
+            routingCode: '044',
+          },
+          debtor: {
+            name: parsed.debtorName || 'Instructed Debtor',
+            accountNumber: parsed.debtorAccount,
+          },
+          creditor: {
+            name: parsed.creditorName || 'Creditor / Biller',
+            accountNumber: parsed.creditorAccount,
+          },
+          amount: parsed.amount || 0,
+          currency: 'NGN',
+          localInstrument: 'RTP',
+          messageType: 'pain.013',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Request to Pay: ₦${(parsed.amount || 0).toLocaleString()} for ${parsed.creditorName}`,
+          status: isAccp ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: isAccp ? 'ACCP' : 'AC01',
+          statusReasonDescription: isAccp ? 'Payment activation request accepted' : 'Debtor account not eligible for RTP',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 15,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        this.emitEvent(
+          txId,
+          journeyId,
+          'SWITCH_RECEIVED',
+          parsed.creditorBank || 'Creditor Bank',
+          'ORIGINATION',
+          'INFO',
+          `Switch received pain.013 RTP request from ${parsed.creditorName} for ₦${(parsed.amount || 0).toLocaleString()}`,
+          { endToEndId: parsed.endToEndId }
+        );
+        this.emitEvent(
+          txId,
+          journeyId,
+          isAccp ? 'RESPONSE_CREATED' : 'TRANSACTION_REJECTED',
+          parsed.debtorBank || 'Debtor Bank',
+          'DESTINATION',
+          isAccp ? 'SUCCESS' : 'ERROR',
+          isAccp ? 'Payment activation approved (ACCP)' : 'Payment activation rejected: Account not eligible',
+          { status: isAccp ? 'ACCP' : 'RJCT' }
+        );
 
         return {
           success: isAccp,
@@ -2030,7 +2643,8 @@ export class SwitchEngine {
           responseParsed: { status: isAccp ? 'ACCP' : 'RJCT' },
           error: isAccp ? undefined : 'Debtor account not eligible for RTP',
           reasonCode: isAccp ? 'ACCP' : 'AC01',
-          transactionId: parsed.endToEndId,
+          transactionId: txId,
+          uetr,
         };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
@@ -2041,9 +2655,12 @@ export class SwitchEngine {
     if (detectedType.startsWith('pain.014')) {
       try {
         const parsed = parseRtpXml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.endToEndId || `RTP-RPT-${Date.now()}`;
+
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.originalMsgId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '11',
           messageId: parsed.msgId,
@@ -2052,12 +2669,56 @@ export class SwitchEngine {
           receiverBic: parsed.creditorBank || 'CREDITOR_BANK',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.endToEndId,
-          endToEndId: parsed.endToEndId,
+          uetr,
+          endToEndId: parsed.endToEndId || uetr,
           instructionId: parsed.msgId,
           processingStatus: parsed.status === 'ACCP' ? 'PROCESSED' : 'REJECTED',
         });
-        return { success: true, messageType: detectedType, parsed };
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-014-${Date.now()}`,
+          endToEndId: parsed.endToEndId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'debtor-bank',
+            code: 'DEBTOR_BANK',
+            name: 'Debtor Institution',
+            routingCode: '044',
+          },
+          destinationInstitution: {
+            id: 'creditor-bank',
+            code: 'CREDITOR_BANK',
+            name: 'Creditor Institution',
+            routingCode: '058',
+          },
+          debtor: {
+            name: parsed.debtorName || 'Instructed Debtor',
+            accountNumber: parsed.debtorAccount || '',
+          },
+          creditor: {
+            name: parsed.creditorName || 'Creditor',
+            accountNumber: parsed.creditorAccount || '',
+          },
+          amount: 0,
+          currency: 'NGN',
+          localInstrument: 'RTP',
+          messageType: 'pain.014',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `RTP Status Report: ${parsed.status || 'PROCESSED'}`,
+          status: 'COMPLETED',
+          statusReasonCode: parsed.status || 'ACCP',
+          statusReasonDescription: 'RTP status report acknowledged',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        return { success: true, messageType: detectedType, parsed, transactionId: txId, uetr };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
@@ -2094,9 +2755,12 @@ export class SwitchEngine {
     if (detectedType.startsWith('pain.002')) {
       try {
         const parsed = parseDirectDebitXml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.endToEndId || parsed.msgId || `CST-PSR-${Date.now()}`;
+
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.originalMsgId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '14',
           messageId: parsed.msgId,
@@ -2105,12 +2769,56 @@ export class SwitchEngine {
           receiverBic: 'CLIENT',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.msgId,
+          uetr,
           endToEndId: parsed.msgId,
           instructionId: parsed.msgId,
           processingStatus: parsed.status === 'ACSC' ? 'PROCESSED' : 'REJECTED',
         });
-        return { success: true, messageType: detectedType, parsed };
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-002-CST-${Date.now()}`,
+          endToEndId: parsed.msgId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'switch',
+            code: 'CENTRAL_SWITCH',
+            name: 'Central Switch',
+            routingCode: 'NPS',
+          },
+          destinationInstitution: {
+            id: 'dest',
+            code: 'CUSTOMER_PORTAL',
+            name: 'Customer Banking Channel',
+            routingCode: 'CUST',
+          },
+          debtor: {
+            name: 'Debtor Customer',
+            accountNumber: '',
+          },
+          creditor: {
+            name: 'Customer Status Report',
+            accountNumber: '',
+          },
+          amount: 0,
+          currency: 'NGN',
+          localInstrument: 'PSR',
+          messageType: 'pain.002',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `Customer Payment Status Report: ${parsed.groupStatus || 'ACTC'}`,
+          status: 'COMPLETED',
+          statusReasonCode: parsed.groupStatus || 'ACTC',
+          statusReasonDescription: 'Customer status report processed',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        return { success: true, messageType: detectedType, parsed, transactionId: txId, uetr };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }
@@ -2120,9 +2828,12 @@ export class SwitchEngine {
     if (detectedType.startsWith('pacs.002')) {
       try {
         const parsed = parsePacs002Xml(rawXml);
+        const txId = uuidv4();
+        const uetr = parsed.originalEndToEndId || parsed.msgId || `FI-PSR-${Date.now()}`;
+
         this.persistHybridMessage({
           businessJourneyId: journeyId,
-          transactionId: parsed.originalTxId || parsed.msgId,
+          transactionId: txId,
           messageType: detectedType,
           messageVersion: '12',
           messageId: parsed.msgId,
@@ -2131,12 +2842,56 @@ export class SwitchEngine {
           receiverBic: parsed.receiverBic || 'SWITCH',
           rawXml,
           parsedJson: parsed,
-          uetr: parsed.originalEndToEndId,
+          uetr,
           endToEndId: parsed.originalEndToEndId,
           instructionId: parsed.msgId,
           processingStatus: parsed.groupStatus === 'ACSC' ? 'PROCESSED' : 'REJECTED',
         });
-        return { success: true, messageType: detectedType, parsed };
+
+        const canonicalPayment: CanonicalPayment = {
+          id: txId,
+          businessJourneyId: journeyId,
+          uetr,
+          instructionId: parsed.msgId || `MSG-002-FI-${Date.now()}`,
+          endToEndId: parsed.originalEndToEndId || uetr,
+          txId,
+          originatingInstitution: {
+            id: 'switch',
+            code: 'CENTRAL_SWITCH',
+            name: 'Central Switch',
+            routingCode: 'NPS',
+          },
+          destinationInstitution: {
+            id: 'dest',
+            code: parsed.instdAgtMemberId || 'INSTG_BANK',
+            name: 'Instructing Agent',
+            routingCode: parsed.instdAgtMemberId || '058',
+          },
+          debtor: {
+            name: 'FI Settlement Party',
+            accountNumber: '',
+          },
+          creditor: {
+            name: 'FI Status Report',
+            accountNumber: '',
+          },
+          amount: 0,
+          currency: 'NGN',
+          localInstrument: 'PSR',
+          messageType: 'pacs.002',
+          chargeBearer: 'SLEV',
+          remittanceInformation: `FI Payment Status Report: ${parsed.groupStatus || 'ACTC'}`,
+          status: parsed.groupStatus === 'ACSC' || parsed.groupStatus === 'ACTC' ? 'COMPLETED' : 'REJECTED',
+          statusReasonCode: parsed.reasonCode || parsed.groupStatus || 'ACTC',
+          statusReasonDescription: parsed.reasonDescription || 'FI payment status report processed',
+          initiatedAt: nowIso,
+          completedAt: new Date().toISOString(),
+          latencyMs: 10,
+        };
+        this.transactions.unshift(canonicalPayment);
+        syncPaymentToSupabase(canonicalPayment).catch(() => {});
+
+        return { success: true, messageType: detectedType, parsed, transactionId: txId, uetr };
       } catch (err: any) {
         return { success: false, messageType: detectedType, parsed: {}, error: err.message, reasonCode: 'SY01' };
       }

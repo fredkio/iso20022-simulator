@@ -25,8 +25,8 @@ export default function LiveTransactionsTable({
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-bold text-slate-900">Live Switch Transactions Stream</h2>
-          <p className="text-xs text-slate-500">Real-time clearing instructions (pacs.008, pain.008, pacs.003) and status reports</p>
+          <h2 className="text-base font-bold text-slate-900">Live Switch Transactions & Messages Stream</h2>
+          <p className="text-xs text-slate-500">Real-time stream of all ISO 20022 messages (clearing, balance & statement enquiries, mandates, RTP, and status reports)</p>
         </div>
 
         {/* Search & Filter Toolbar */}
@@ -35,7 +35,7 @@ export default function LiveTransactionsTable({
             <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
             <input
               type="text"
-              placeholder="Search UETR, Acct, Name..."
+              placeholder="Search UETR, Acct, Name, camt.060..."
               value={searchTerm}
               onChange={(e) => onSearchChange(e.target.value)}
               className="w-full rounded-md border border-slate-200 pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-900"
@@ -74,7 +74,7 @@ export default function LiveTransactionsTable({
             {transactions.length === 0 ? (
               <tr>
                 <td colSpan={8} className="py-8 text-center text-slate-400 text-xs">
-                  No transactions found matching criteria. Initiate transfers in Customer Banking or Simulation Lab.
+                  No transactions or messages found. Initiate transfers in Banking Portal or dispatch any ISO message in Protocol Lab.
                 </td>
               </tr>
             ) : (
@@ -96,28 +96,44 @@ export default function LiveTransactionsTable({
                   <td className="py-3 px-3">
                     <span className="font-medium text-slate-900 block">{tx.debtor.name}</span>
                     <span className="font-mono text-[10px] text-slate-500">
-                      {tx.originatingInstitution.name} ({tx.debtor.accountNumber})
+                      {tx.originatingInstitution.name} ({tx.debtor.accountNumber || tx.debtor.name})
                     </span>
                   </td>
 
                   <td className="py-3 px-3">
                     <span className="font-medium text-slate-900 block">{tx.creditor.name}</span>
                     <span className="font-mono text-[10px] text-slate-500">
-                      {tx.destinationInstitution.name} ({tx.creditor.accountNumber})
+                      {tx.destinationInstitution.name} ({tx.creditor.accountNumber || tx.destinationInstitution.code})
                     </span>
                   </td>
 
                   <td className="py-3 px-3 font-mono font-bold text-slate-900">
-                    ₦{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    {tx.amount > 0 ? (
+                      `₦${tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                    ) : (
+                      <span className="text-slate-400 font-normal">—</span>
+                    )}
                   </td>
 
                   <td className="py-3 px-3">
                     <span
                       className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${
-                        (tx.messageType?.startsWith('pain.008') || tx.localInstrument === 'DD')
+                        tx.messageType?.startsWith('pain.008') || tx.localInstrument === 'DD'
                           ? 'bg-amber-100 text-amber-900 border border-amber-300'
                           : tx.messageType?.startsWith('pacs.003')
                           ? 'bg-purple-100 text-purple-900 border border-purple-300'
+                          : tx.messageType?.startsWith('camt.060')
+                          ? 'bg-blue-100 text-blue-900 border border-blue-300'
+                          : tx.messageType?.startsWith('camt.052') || tx.messageType?.startsWith('camt.053')
+                          ? 'bg-sky-100 text-sky-900 border border-sky-300'
+                          : tx.messageType?.startsWith('acmt.023') || tx.messageType?.startsWith('acmt.024')
+                          ? 'bg-teal-100 text-teal-900 border border-teal-300'
+                          : tx.messageType?.startsWith('pain.009') || tx.messageType?.startsWith('pain.010') || tx.messageType?.startsWith('pain.011') || tx.messageType?.startsWith('pain.012')
+                          ? 'bg-indigo-100 text-indigo-900 border border-indigo-300'
+                          : tx.messageType?.startsWith('pain.013') || tx.messageType?.startsWith('pain.014')
+                          ? 'bg-violet-100 text-violet-900 border border-violet-300'
+                          : tx.messageType?.startsWith('pacs.028')
+                          ? 'bg-orange-100 text-orange-900 border border-orange-300'
                           : 'bg-slate-100 text-slate-700'
                       }`}
                     >

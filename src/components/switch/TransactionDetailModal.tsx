@@ -72,6 +72,11 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
   const acmt023 = isoMessages.find((m) => m.messageType === 'acmt.023');
   const acmt024 = isoMessages.find((m) => m.messageType === 'acmt.024');
   const isDirectDebit = data?.transaction?.messageType === 'pain.008' || data?.transaction?.messageType === 'pacs.003' || isoMessages.some((m) => m.messageType === 'pain.008' || m.messageType === 'pacs.003');
+  const isCamt060 = data?.transaction?.messageType?.startsWith('camt.060') || isoMessages.some((m) => m.messageType?.startsWith('camt.060'));
+  const isMandate = data?.transaction?.messageType?.startsWith('pain.009') || data?.transaction?.messageType?.startsWith('pain.010') || data?.transaction?.messageType?.startsWith('pain.011') || data?.transaction?.messageType?.startsWith('pain.012');
+  const isRtp = data?.transaction?.messageType?.startsWith('pain.013') || data?.transaction?.messageType?.startsWith('pain.014');
+  const isStatusRequest = data?.transaction?.messageType?.startsWith('pacs.028');
+  const isStandaloneEnquiry = data?.transaction?.messageType?.startsWith('acmt.023') || data?.transaction?.messageType?.startsWith('acmt.024');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
@@ -258,11 +263,11 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
                     <div className="border border-slate-200 rounded-lg p-4 bg-white shadow-xs">
                       <h4 className="font-bold text-slate-900 border-b border-slate-100 pb-2 mb-3 flex items-center justify-between">
                         <span>Group Header (GrpHdr)</span>
-                        <span className="text-[10px] font-mono text-slate-400">pacs.008.001.10</span>
+                        <span className="text-[10px] font-mono text-slate-400">{data.transaction.messageType || pacs008?.messageType || isoMessages[0]?.messageType || 'ISO 20022'}</span>
                       </h4>
                       <dl className="space-y-2">
-                        <div className="flex justify-between"><dt className="text-slate-500">MsgId (Message ID):</dt><dd className="font-mono font-medium">{pacs008?.messageId}</dd></div>
-                        <div className="flex justify-between"><dt className="text-slate-500">CreDtTm (Creation Timestamp):</dt><dd className="font-mono">{pacs008?.receivedAt}</dd></div>
+                        <div className="flex justify-between"><dt className="text-slate-500">MsgId (Message ID):</dt><dd className="font-mono font-medium">{pacs008?.messageId || isoMessages[0]?.messageId || data.transaction.instructionId}</dd></div>
+                        <div className="flex justify-between"><dt className="text-slate-500">CreDtTm (Creation Timestamp):</dt><dd className="font-mono">{pacs008?.receivedAt || isoMessages[0]?.receivedAt || data.transaction.initiatedAt}</dd></div>
                         <div className="flex justify-between"><dt className="text-slate-500">NbOfTxs (Number of Transactions):</dt><dd className="font-mono">1</dd></div>
                         <div className="flex justify-between"><dt className="text-slate-500">SttlmMtd (Settlement Method):</dt><dd className="font-mono font-bold text-emerald-700">CLRG (Clearing System)</dd></div>
                         <div className="flex justify-between"><dt className="text-slate-500">ClrSys (Clearing System):</dt><dd className="font-mono">NPS (National Payment Switch)</dd></div>
@@ -513,7 +518,117 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
                     </p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-center">
-                      {isDirectDebit ? (
+                      {isCamt060 ? (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-blue-600">Stage 1: Balance / Acct Enquiry</span>
+                            <p className="font-bold text-slate-900 mt-1">camt.060.001.07</p>
+                            <p className="text-[10px] text-slate-500 font-mono">AcctRptgReq</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-mono text-[9px] font-bold">
+                              ENQUIRY DISPATCHED
+                            </span>
+                          </div>
+
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Stage 2: Balance & Statement Report</span>
+                            <p className="font-bold text-white mt-1">camt.053 / camt.052</p>
+                            <p className="text-[10px] text-slate-300 font-mono">BkToCstmrStmt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              STATUS: {data.transaction.statusReasonCode || 'ACSC'}
+                            </span>
+                          </div>
+                        </>
+                      ) : isMandate ? (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-indigo-600">Stage 1: Mandate Instruction</span>
+                            <p className="font-bold text-slate-900 mt-1">{data.transaction.messageType || 'pain.009.001.08'}</p>
+                            <p className="text-[10px] text-slate-500 font-mono">MndtInitnReq</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-mono text-[9px] font-bold">
+                              MANDATE INITIATION
+                            </span>
+                          </div>
+
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Stage 2: Acceptance Report</span>
+                            <p className="font-bold text-white mt-1">pain.012.001.08</p>
+                            <p className="text-[10px] text-slate-300 font-mono">MndtAccptncRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              STATUS: {data.transaction.statusReasonCode || 'ACCP'}
+                            </span>
+                          </div>
+                        </>
+                      ) : isRtp ? (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-violet-600">Stage 1: Payment Activation (RTP)</span>
+                            <p className="font-bold text-slate-900 mt-1">pain.013.001.11</p>
+                            <p className="text-[10px] text-slate-500 font-mono">CdtrPmtActvtnReq</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-violet-100 text-violet-800 font-mono text-[9px] font-bold">
+                              REQUEST TO PAY
+                            </span>
+                          </div>
+
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Stage 2: Status Report</span>
+                            <p className="font-bold text-white mt-1">pain.014.001.11</p>
+                            <p className="text-[10px] text-slate-300 font-mono">CdtrPmtActvtnReqStsRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              STATUS: {data.transaction.statusReasonCode || 'ACCP'}
+                            </span>
+                          </div>
+                        </>
+                      ) : isStatusRequest ? (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-orange-600">Stage 1: Status Query</span>
+                            <p className="font-bold text-slate-900 mt-1">pacs.028.001.06</p>
+                            <p className="text-[10px] text-slate-500 font-mono">FIToFIPmtStsReq</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-orange-100 text-orange-800 font-mono text-[9px] font-bold">
+                              PAYMENT STATUS REQUEST
+                            </span>
+                          </div>
+
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Stage 2: Status Report</span>
+                            <p className="font-bold text-white mt-1">pacs.002.001.12</p>
+                            <p className="text-[10px] text-slate-300 font-mono">FIToFIPmtStsRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              STATUS: {data.transaction.statusReasonCode || 'ACSC'}
+                            </span>
+                          </div>
+                        </>
+                      ) : isStandaloneEnquiry ? (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-teal-600">Stage 1: Name Verification</span>
+                            <p className="font-bold text-slate-900 mt-1">acmt.023.001.04</p>
+                            <p className="text-[10px] text-slate-500 font-mono">IdVrfctnReq</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-teal-100 text-teal-800 font-mono text-[9px] font-bold">
+                              IDENTIFICATION REQUEST
+                            </span>
+                          </div>
+
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Stage 2: Verification Report</span>
+                            <p className="font-bold text-white mt-1">acmt.024.001.04</p>
+                            <p className="text-[10px] text-slate-300 font-mono">IdVrfctnRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              STATUS: {data.transaction.statusReasonCode || 'VALID'}
+                            </span>
+                          </div>
+                        </>
+                      ) : isDirectDebit ? (
                         <>
                           {/* Stage 1 */}
                           <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">

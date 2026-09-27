@@ -33,7 +33,9 @@ export async function GET(req: NextRequest) {
         t.debtor.accountNumber.includes(search) ||
         t.creditor.accountNumber.includes(search) ||
         t.debtor.name.toLowerCase().includes(search) ||
-        t.creditor.name.toLowerCase().includes(search)
+        t.creditor.name.toLowerCase().includes(search) ||
+        (t.messageType && t.messageType.toLowerCase().includes(search)) ||
+        (t.remittanceInformation && t.remittanceInformation.toLowerCase().includes(search))
     );
   }
 
