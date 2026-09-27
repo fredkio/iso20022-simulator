@@ -26,7 +26,7 @@ export default function LiveTransactionsTable({
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-slate-900">Live Switch Transactions Stream</h2>
-          <p className="text-xs text-slate-500">Real-time pacs.008 clearing instructions and pacs.002 status reports</p>
+          <p className="text-xs text-slate-500">Real-time clearing instructions (pacs.008, pain.008, pacs.003) and status reports</p>
         </div>
 
         {/* Search & Filter Toolbar */}
@@ -112,8 +112,16 @@ export default function LiveTransactionsTable({
                   </td>
 
                   <td className="py-3 px-3">
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700">
-                      pacs.008
+                    <span
+                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                        (tx.messageType?.startsWith('pain.008') || tx.localInstrument === 'DD')
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                          : tx.messageType?.startsWith('pacs.003')
+                          ? 'bg-purple-100 text-purple-900 border border-purple-300'
+                          : 'bg-slate-100 text-slate-700'
+                      }`}
+                    >
+                      {tx.messageType || (tx.localInstrument === 'DD' ? 'pain.008' : 'pacs.008')}
                     </span>
                   </td>
 

@@ -94,7 +94,7 @@ export default function SwitchConsolePage() {
             <Activity className="h-4 w-4 text-slate-500" />
           </div>
           <p className="mt-1 text-xl font-extrabold text-slate-900">{metrics.totalTransactions}</p>
-          <span className="text-[10px] text-slate-500">pacs.008 instructions</span>
+          <span className="text-[10px] text-slate-500">cleared instructions</span>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-xs">

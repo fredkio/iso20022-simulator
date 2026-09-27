@@ -44,6 +44,9 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
       .then((res) => res.json())
       .then((res) => {
         setData(res);
+        if (res.isoMessages && res.isoMessages.length > 0) {
+          setSelectedXmlMsg(res.isoMessages[0].messageType);
+        }
         setLoading(false);
       })
       .catch((err) => {
@@ -60,16 +63,15 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const acmt023 = data?.isoMessages.find((m) => m.messageType.includes('acmt.023'));
-  const acmt024 = data?.isoMessages.find((m) => m.messageType.includes('acmt.024'));
-  const pacs008 = data?.isoMessages.find((m) => m.messageType.includes('pacs.008'));
-  const pacs002 = data?.isoMessages.find((m) => m.messageType.includes('pacs.002'));
+  const isoMessages = data?.isoMessages || [];
+  const currentMsg = isoMessages.find((m) => m.messageType === selectedXmlMsg) || isoMessages[0];
+  const currentXml = currentMsg?.rawXml || '';
 
-  let currentXml = pacs008?.rawXml;
-  if (selectedXmlMsg === 'acmt.023') currentXml = acmt023?.rawXml;
-  else if (selectedXmlMsg === 'acmt.024') currentXml = acmt024?.rawXml;
-  else if (selectedXmlMsg === 'pacs.002') currentXml = pacs002?.rawXml;
-  else if (selectedXmlMsg === 'pacs.008') currentXml = pacs008?.rawXml;
+  const pacs008 = isoMessages.find((m) => m.messageType === 'pacs.008' || m.messageType === 'pain.008' || m.messageType === 'pacs.003');
+  const pacs002 = isoMessages.find((m) => m.messageType === 'pacs.002' || m.messageType === 'pain.002');
+  const acmt023 = isoMessages.find((m) => m.messageType === 'acmt.023');
+  const acmt024 = isoMessages.find((m) => m.messageType === 'acmt.024');
+  const isDirectDebit = data?.transaction?.messageType === 'pain.008' || data?.transaction?.messageType === 'pacs.003' || isoMessages.some((m) => m.messageType === 'pain.008' || m.messageType === 'pacs.003');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
@@ -318,52 +320,20 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      {acmt023 && (
+                      {isoMessages.map((msg) => (
                         <button
-                          onClick={() => setSelectedXmlMsg('acmt.023')}
-                          className={`px-2.5 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${
-                            selectedXmlMsg === 'acmt.023'
-                              ? 'bg-slate-900 text-white'
+                          key={msg.id}
+                          onClick={() => setSelectedXmlMsg(msg.messageType)}
+                          className={`px-2.5 py-1.5 rounded text-xs font-mono font-semibold transition-colors flex items-center gap-1 ${
+                            selectedXmlMsg === msg.messageType
+                              ? 'bg-slate-900 text-white shadow-xs'
                               : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                           }`}
                         >
-                          acmt.023 (Verification Req)
+                          <span>{msg.messageType}</span>
+                          <span className="text-[10px] opacity-75 font-sans">({msg.senderBic} ➔ {msg.receiverBic})</span>
                         </button>
-                      )}
-                      {acmt024 && (
-                        <button
-                          onClick={() => setSelectedXmlMsg('acmt.024')}
-                          className={`px-2.5 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${
-                            selectedXmlMsg === 'acmt.024'
-                              ? 'bg-slate-900 text-white'
-                              : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                          }`}
-                        >
-                          acmt.024 (Verification Rpt)
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setSelectedXmlMsg('pacs.008')}
-                        className={`px-2.5 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${
-                          selectedXmlMsg === 'pacs.008'
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                        }`}
-                      >
-                        pacs.008 (Credit Transfer)
-                      </button>
-                      {pacs002 && (
-                        <button
-                          onClick={() => setSelectedXmlMsg('pacs.002')}
-                          className={`px-2.5 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${
-                            selectedXmlMsg === 'pacs.002'
-                              ? 'bg-slate-900 text-white'
-                              : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                          }`}
-                        >
-                          pacs.002 (Payment Status)
-                        </button>
-                      )}
+                      ))}
                     </div>
 
                     <button
@@ -543,45 +513,91 @@ export default function TransactionDetailModal({ uetr, onClose }: TransactionDet
                     </p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-center">
-                      {/* Stage 1 */}
-                      <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
-                        <span className="text-[10px] uppercase font-bold text-amber-600">Prerequisite Stage 1</span>
-                        <p className="font-bold text-slate-900 mt-1">acmt.023.001.03</p>
-                        <p className="text-[10px] text-slate-500 font-mono">IdVrfctnReq</p>
-                        <span className="inline-block mt-2 px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono text-[9px] font-bold">
-                          NAME ENQUIRY
-                        </span>
-                      </div>
+                      {isDirectDebit ? (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-amber-600">Stage 1: Mandate / Initiation</span>
+                            <p className="font-bold text-slate-900 mt-1">pain.008.001.10</p>
+                            <p className="text-[10px] text-slate-500 font-mono">CstmrDrctDbtInitn</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono text-[9px] font-bold">
+                              CUSTOMER INITIATION
+                            </span>
+                          </div>
 
-                      {/* Stage 2 */}
-                      <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
-                        <span className="text-[10px] uppercase font-bold text-blue-600">Prerequisite Stage 2</span>
-                        <p className="font-bold text-slate-900 mt-1">acmt.024.001.03</p>
-                        <p className="text-[10px] text-slate-500 font-mono">IdVrfctnRpt</p>
-                        <span className="inline-block mt-2 px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-mono text-[9px] font-bold">
-                          {acmt024 ? 'VERIFIED' : 'PENDING'}
-                        </span>
-                      </div>
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-purple-600">Stage 2: Clearing Leg</span>
+                            <p className="font-bold text-slate-900 mt-1">pacs.003.001.10</p>
+                            <p className="text-[10px] text-slate-500 font-mono">FIToFICstmrDrctDbt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-mono text-[9px] font-bold">
+                              DIRECT DEBIT CLEARING
+                            </span>
+                          </div>
 
-                      {/* Stage 3 */}
-                      <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
-                        <span className="text-[10px] uppercase font-bold text-emerald-600">Clearing Stage 3</span>
-                        <p className="font-bold text-slate-900 mt-1">pacs.008.001.10</p>
-                        <p className="text-[10px] text-slate-500 font-mono">FIToFICstmrCdtTrf</p>
-                        <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono text-[9px] font-bold">
-                          CREDIT TRANSFER
-                        </span>
-                      </div>
+                          {/* Stage 3 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-600">Stage 3: FI Settlement</span>
+                            <p className="font-bold text-slate-900 mt-1">pacs.002.001.12</p>
+                            <p className="text-[10px] text-slate-500 font-mono">FIToFIPmtStsRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono text-[9px] font-bold">
+                              STATUS: {pacs002?.parsedJson?.Document?.FIToFIPmtStsRpt?.TxInfAndSts?.TxSts || data.transaction.statusReasonCode || 'ACTC'}
+                            </span>
+                          </div>
 
-                      {/* Stage 4 */}
-                      <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
-                        <span className="text-[10px] uppercase font-bold text-emerald-400">Settlement Stage 4</span>
-                        <p className="font-bold text-white mt-1">pacs.002.001.12</p>
-                        <p className="text-[10px] text-slate-300 font-mono">FIToFIPmtStsRpt</p>
-                        <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
-                          STATUS: {pacs002?.parsedJson?.Document?.FIToFIPmtStsRpt?.TxInfAndSts?.TxSts || data.transaction.statusReasonCode || 'ACTC'}
-                        </span>
-                      </div>
+                          {/* Stage 4 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Stage 4: Customer Status</span>
+                            <p className="font-bold text-white mt-1">pain.002.001.12</p>
+                            <p className="text-[10px] text-slate-300 font-mono">CstmrPmtStsRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              CUSTOMER CONFIRMED
+                            </span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {/* Stage 1 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-amber-600">Prerequisite Stage 1</span>
+                            <p className="font-bold text-slate-900 mt-1">acmt.023.001.03</p>
+                            <p className="text-[10px] text-slate-500 font-mono">IdVrfctnReq</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono text-[9px] font-bold">
+                              NAME ENQUIRY
+                            </span>
+                          </div>
+
+                          {/* Stage 2 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-blue-600">Prerequisite Stage 2</span>
+                            <p className="font-bold text-slate-900 mt-1">acmt.024.001.03</p>
+                            <p className="text-[10px] text-slate-500 font-mono">IdVrfctnRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-mono text-[9px] font-bold">
+                              {acmt024 ? 'VERIFIED' : 'PENDING'}
+                            </span>
+                          </div>
+
+                          {/* Stage 3 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-600">Clearing Stage 3</span>
+                            <p className="font-bold text-slate-900 mt-1">pacs.008.001.10</p>
+                            <p className="text-[10px] text-slate-500 font-mono">FIToFICstmrCdtTrf</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono text-[9px] font-bold">
+                              CREDIT TRANSFER
+                            </span>
+                          </div>
+
+                          {/* Stage 4 */}
+                          <div className="p-3 rounded-lg border border-slate-200 bg-slate-900 text-white flex flex-col justify-between">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400">Settlement Stage 4</span>
+                            <p className="font-bold text-white mt-1">pacs.002.001.12</p>
+                            <p className="text-[10px] text-slate-300 font-mono">FIToFIPmtStsRpt</p>
+                            <span className="inline-block mt-2 px-2 py-0.5 rounded bg-emerald-800 text-emerald-200 font-mono text-[9px] font-bold">
+                              STATUS: {pacs002?.parsedJson?.Document?.FIToFIPmtStsRpt?.TxInfAndSts?.TxSts || data.transaction.statusReasonCode || 'ACTC'}
+                            </span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

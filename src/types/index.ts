@@ -124,6 +124,7 @@ export interface CanonicalPayment {
   remittanceInformation?: string;
 
   status: PaymentStatus;
+  messageType?: string;
   statusReasonCode?: string;      // e.g. AC01, AM04, DS04
   statusReasonDescription?: string;
   failureReasonCode?: string;
